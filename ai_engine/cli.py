@@ -10,9 +10,12 @@ from jd_parser import JDParser
 from gap_analyzer import GapAnalyzer
 from ats_scorer import ATSScorer
 from resume_rewriter import ResumeRewriter
+from resume_exporter import ResumeExporter
 from roadmap_generator import RoadmapGenerator
 from cover_letter import CoverLetterGenerator
 from interview_prep import InterviewPrepGenerator
+from humanizer import HumanizerEngine
+from company_interest import CompanyInterestGenerator
 
 
 def stream_cover_letter(payload):
@@ -22,6 +25,24 @@ def stream_cover_letter(payload):
     jd = payload.get("jd", {})
     tone = payload.get("tone", "professional")
     for chunk in generator.stream(candidate, jd, tone):
+        print(json.dumps({"chunk": chunk}), flush=True)
+
+
+def stream_company_interest(payload):
+    """Streams company interest answer chunks as JSON lines for SSE consumption."""
+    generator = CompanyInterestGenerator()
+    candidate = payload.get("candidate", {})
+    jd = payload.get("jd", {})
+    company_notes = payload.get("company_notes", "")
+    for chunk in generator.stream(candidate, jd, company_notes):
+        print(json.dumps({"chunk": chunk}), flush=True)
+
+
+def stream_humanize(payload):
+    """Streams humanized text chunks as JSON lines for SSE consumption."""
+    engine = HumanizerEngine()
+    text = payload.get("text", "")
+    for chunk in engine.stream_humanize(text):
         print(json.dumps({"chunk": chunk}), flush=True)
 
 
@@ -47,7 +68,6 @@ def main():
 
         elif action == "parse_jd":
             parser = JDParser()
-            # Support both `input_data` (from local server) and `text_or_url` keys
             text = payload.get("input_data") or payload.get("text_or_url", "")
             result = parser.parse(text)
 
@@ -64,7 +84,6 @@ def main():
             candidate = payload.get("candidate", {})
             jd = payload.get("jd", {})
             gap_analysis = payload.get("gap_analysis", {})
-            # Build the keyword + bullet lists
             jd_keywords = jd.get("required_skills", []) + jd.get("keywords", [])
             bullets = candidate.get("experience", [])
             rewritten = rewriter.rewrite_bullets(bullets, jd_keywords, gap_analysis)
@@ -73,12 +92,25 @@ def main():
                 "rewritten_experience": rewritten
             }
 
+        elif action == "export_resume":
+            exporter = ResumeExporter()
+            profile = payload.get("profile", {})
+            accepted_bullets = payload.get("accepted_bullets", [])
+            export_format = payload.get("format", "docx").lower()
+            output_path = payload.get("output_path", "/tmp/resume_export")
+
+            if export_format == "pdf":
+                out = exporter.export_to_pdf(profile, accepted_bullets, output_path + ".pdf")
+            else:
+                out = exporter.export_to_docx(profile, accepted_bullets, output_path + ".docx")
+
+            result = {"status": "success", "file_path": out}
+
         elif action == "roadmap":
             generator = RoadmapGenerator()
             skill = payload.get("skill")
             jd_context = payload.get("jd_context", "")
             candidate_level = payload.get("candidate_level", "none")
-            # Build a single gap item so generate_roadmap() can process it
             gap_item = {
                 "skill": skill,
                 "why_it_matters": f"Required for the role. Context: {jd_context}",
@@ -96,6 +128,14 @@ def main():
 
         elif action == "cover_letter":
             stream_cover_letter(payload)
+            sys.exit(0)
+
+        elif action == "company_interest":
+            stream_company_interest(payload)
+            sys.exit(0)
+
+        elif action == "humanize":
+            stream_humanize(payload)
             sys.exit(0)
 
         else:

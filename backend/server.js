@@ -14,20 +14,30 @@ const UPLOADS_DIR = path.join(__dirname, '../data/uploads');
 const PROFILES_DIR = path.join(__dirname, '../data/profiles');
 const REPORTS_DIR = path.join(__dirname, '../data/reports');
 const TRACKER_DIR = path.join(__dirname, '../data/tracker');
+const EXPORTS_DIR = path.join(__dirname, '../data/exports');
 
-[UPLOADS_DIR, PROFILES_DIR, REPORTS_DIR, TRACKER_DIR].forEach(dir => {
+[UPLOADS_DIR, PROFILES_DIR, REPORTS_DIR, TRACKER_DIR, EXPORTS_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// File upload storage
+// File upload storage — accept PDF and DOCX
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPLOADS_DIR),
     filename: (req, file, cb) => {
-        const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
         cb(null, `${Date.now()}-${safeName}`);
     }
 });
-const upload = multer({ storage });
+const upload = multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+        const allowed = ['.pdf', '.docx'];
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (allowed.includes(ext)) cb(null, true);
+        else cb(new Error('Only .pdf and .docx files are allowed.'));
+    },
+    limits: { fileSize: 20 * 1024 * 1024 } // 20MB limit
+});
 
 // Python executable (use venv)
 const getPython = () => {
@@ -59,7 +69,6 @@ const runPython = (action, payload) => {
                 return reject(errStr || 'Unknown Python error');
             }
             try {
-                // Parse last valid JSON line (handles any stray stderr-to-stdout)
                 const lines = dataStr.trim().split('\n');
                 let parsed = null;
                 for (let i = lines.length - 1; i >= 0; i--) {
@@ -74,14 +83,41 @@ const runPython = (action, payload) => {
     });
 };
 
+// Generic SSE streaming helper
+const streamPython = (action, payload, req, res) => {
+    const payloadPath = path.join(REPORTS_DIR, `payload_${Date.now()}.json`);
+    fs.writeFileSync(payloadPath, JSON.stringify(payload));
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const pyProcess = spawn(getPython(), [CLI_PATH, action, payloadPath]);
+
+    pyProcess.stdout.on('data', (data) => {
+        const lines = data.toString().split('\n').filter(l => l.trim() !== '');
+        for (const line of lines) {
+            try {
+                const chunkObj = JSON.parse(line);
+                if (chunkObj.chunk) res.write(`data: ${JSON.stringify({ chunk: chunkObj.chunk })}\n\n`);
+            } catch (_) { /* ignore non-JSON lines */ }
+        }
+    });
+
+    pyProcess.on('close', () => {
+        if (fs.existsSync(payloadPath)) fs.unlinkSync(payloadPath);
+        res.write(`data: [DONE]\n\n`);
+        res.end();
+    });
+};
+
 // ─── ROUTES ─────────────────────────────────────────────────────────────────
 
-// Upload & parse resume
+// Upload & parse resume (PDF or DOCX)
 app.post('/api/resume/upload', upload.single('resume'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         const result = await runPython('parse_resume', { pdf_path: req.file.path });
-        // Persist profile
         fs.writeFileSync(
             path.join(PROFILES_DIR, `${req.file.filename}.json`),
             JSON.stringify(result, null, 2)
@@ -93,7 +129,6 @@ app.post('/api/resume/upload', upload.single('resume'), async (req, res) => {
 // Parse job description (text or URL)
 app.post('/api/jd/parse', async (req, res) => {
     try {
-        // Accept both { input_data, is_url } and { text_or_url }
         const payload = {
             input_data: req.body.input_data || req.body.text_or_url || '',
             is_url: req.body.is_url || false
@@ -126,6 +161,33 @@ app.post('/api/rewrite', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.toString() }); }
 });
 
+// Export resume as PDF or DOCX (after user accepts/rejects bullets)
+app.post('/api/resume/export', async (req, res) => {
+    try {
+        const { profile, accepted_bullets, format } = req.body;
+        const outputBase = path.join(EXPORTS_DIR, `resume_${Date.now()}`);
+        const result = await runPython('export_resume', {
+            profile,
+            accepted_bullets,
+            format: format || 'docx',
+            output_path: outputBase
+        });
+
+        const filePath = result.file_path;
+        if (!filePath || !fs.existsSync(filePath)) {
+            return res.status(500).json({ error: 'Export failed — file not found.' });
+        }
+
+        const contentType = format === 'pdf'
+            ? 'application/pdf'
+            : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="optimized_resume.${format}"`);
+        fs.createReadStream(filePath).pipe(res);
+    } catch (e) { res.status(500).json({ error: e.toString() }); }
+});
+
 // Learning roadmap for a single skill
 app.post('/api/roadmap', async (req, res) => {
     try {
@@ -151,34 +213,25 @@ app.post('/api/interview-prep', async (req, res) => {
 
 // Cover letter — Server-Sent Events streaming
 app.post('/api/cover-letter', (req, res) => {
-    const payloadPath = path.join(REPORTS_DIR, `payload_${Date.now()}.json`);
-    fs.writeFileSync(payloadPath, JSON.stringify({
+    streamPython('cover_letter', {
         candidate: req.body.candidate,
         jd: req.body.jd,
         tone: req.body.tone || 'professional'
-    }));
+    }, req, res);
+});
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
+// Company Interest answer — SSE streaming
+app.post('/api/company-interest', (req, res) => {
+    streamPython('company_interest', {
+        candidate: req.body.candidate,
+        jd: req.body.jd,
+        company_notes: req.body.company_notes || ''
+    }, req, res);
+});
 
-    const pyProcess = spawn(getPython(), [CLI_PATH, 'cover_letter', payloadPath]);
-
-    pyProcess.stdout.on('data', (data) => {
-        const lines = data.toString().split('\n').filter(l => l.trim() !== '');
-        for (const line of lines) {
-            try {
-                const chunkObj = JSON.parse(line);
-                if (chunkObj.chunk) res.write(`data: ${JSON.stringify({ chunk: chunkObj.chunk })}\n\n`);
-            } catch (_) { /* ignore non-JSON lines */ }
-        }
-    });
-
-    pyProcess.on('close', () => {
-        if (fs.existsSync(payloadPath)) fs.unlinkSync(payloadPath);
-        res.write(`data: [DONE]\n\n`);
-        res.end();
-    });
+// Humanize text — SSE streaming
+app.post('/api/humanize', (req, res) => {
+    streamPython('humanize', { text: req.body.text }, req, res);
 });
 
 // ─── APPLICATION TRACKER ────────────────────────────────────────────────────

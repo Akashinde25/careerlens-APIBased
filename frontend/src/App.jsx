@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, FileText, Target, Map, PenTool, MessageSquare, Briefcase, Zap } from 'lucide-react';
+import { LayoutDashboard, FileText, Target, Map, PenTool, MessageSquare, Briefcase, Zap, Building2 } from 'lucide-react';
 
 import Upload from './pages/Upload';
 import Analysis from './pages/Analysis';
@@ -8,6 +8,7 @@ import Roadmap from './pages/Roadmap';
 import Tracker from './pages/Tracker';
 import CoverLetter from './pages/CoverLetter';
 import InterviewPrep from './pages/InterviewPrep';
+import CompanyInterest from './pages/CompanyInterest';
 
 function Sidebar() {
   const location = useLocation();
@@ -16,6 +17,7 @@ function Sidebar() {
     { path: '/analysis', icon: <Target size={20} />, label: 'Gap Analysis' },
     { path: '/rewrite', icon: <PenTool size={20} />, label: 'Resume Optimizer' },
     { path: '/cover-letter', icon: <FileText size={20} />, label: 'Cover Letter' },
+    { path: '/company-interest', icon: <Building2 size={20} />, label: 'Company Interest' },
     { path: '/interview', icon: <MessageSquare size={20} />, label: 'Interview Prep' },
     { path: '/roadmap', icon: <Map size={20} />, label: 'Learning Roadmap' },
     { path: '/tracker', icon: <Briefcase size={20} />, label: 'Application Tracker' },
@@ -77,6 +79,7 @@ function App() {
               <Route path="/analysis" element={<Analysis />} />
               <Route path="/rewrite" element={<RewrittenResume />} />
               <Route path="/cover-letter" element={<CoverLetter />} />
+              <Route path="/company-interest" element={<CompanyInterest />} />
               <Route path="/interview" element={<InterviewPrep />} />
               <Route path="/roadmap" element={<Roadmap />} />
               <Route path="/tracker" element={<Tracker />} />

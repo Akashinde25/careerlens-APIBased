@@ -1,14 +1,24 @@
 import fitz  # PyMuPDF
 import pdfplumber
-import spacy
 import re
-import json
+import os
 
 try:
+    import spacy
     nlp = spacy.load("en_core_web_lg")
-except OSError:
-    print("Warning: spacy model 'en_core_web_lg' not found. Using small model or skipping.")
-    nlp = None
+except Exception:
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+    except Exception:
+        nlp = None
+
+try:
+    from docx import Document as DocxDocument
+    DOCX_SUPPORTED = True
+except ImportError:
+    DOCX_SUPPORTED = False
+
 
 class ResumeParser:
     def __init__(self):
@@ -16,7 +26,6 @@ class ResumeParser:
 
     def extract_text_from_pdf(self, file_path):
         text = ""
-        # Try pdfplumber first
         try:
             with pdfplumber.open(file_path) as pdf:
                 for page in pdf.pages:
@@ -24,9 +33,8 @@ class ResumeParser:
                     if page_text:
                         text += page_text + "\n"
         except Exception as e:
-            print(f"pdfplumber failed: {e}")
-            
-        # Fallback to PyMuPDF if empty
+            print(f"pdfplumber failed: {e}", flush=True)
+
         if len(text.strip()) < 50:
             try:
                 doc = fitz.open(file_path)
@@ -34,13 +42,24 @@ class ResumeParser:
                 for page in doc:
                     text += page.get_text() + "\n"
             except Exception as e:
-                print(f"PyMuPDF failed: {e}")
-                
+                print(f"PyMuPDF failed: {e}", flush=True)
+
         return text
 
+    def extract_text_from_docx(self, file_path):
+        if not DOCX_SUPPORTED:
+            raise ImportError("python-docx not installed. Run: pip install python-docx")
+        doc = DocxDocument(file_path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(paragraphs)
+
     def parse(self, file_path):
-        text = self.extract_text_from_pdf(file_path)
-        
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".docx":
+            text = self.extract_text_from_docx(file_path)
+        else:
+            text = self.extract_text_from_pdf(file_path)
+
         profile = {
             "name": "",
             "contact": {"email": "", "phone": "", "linkedin": "", "github": ""},
@@ -50,64 +69,77 @@ class ResumeParser:
             "projects": [],
             "skills": [],
             "certifications": [],
-            "raw_text": text
+            "raw_text": text,
+            "file_path": file_path
         }
-        
-        # Extract basic contact info using Regex
-        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-        emails = re.findall(email_pattern, text)
-        if emails: profile["contact"]["email"] = emails[0]
-        
-        phone_pattern = r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
-        phones = re.findall(phone_pattern, text)
-        if phones: profile["contact"]["phone"] = phones[0]
-        
-        linkedin_pattern = r'(linkedin\.com/in/[a-zA-Z0-9_-]+)'
-        linkedin = re.findall(linkedin_pattern, text)
-        if linkedin: profile["contact"]["linkedin"] = linkedin[0]
-        
-        # Simple NLP for Name extraction (First ORG or PERSON near the top)
+
+        # Contact via Regex
+        emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+        if emails:
+            profile["contact"]["email"] = emails[0]
+
+        phones = re.findall(r'\(?\d{3}\)?[\-.\s]?\d{3}[\-.\s]?\d{4}', text)
+        if phones:
+            profile["contact"]["phone"] = phones[0]
+
+        linkedin = re.findall(r'(linkedin\.com/in/[a-zA-Z0-9_-]+)', text)
+        if linkedin:
+            profile["contact"]["linkedin"] = linkedin[0]
+
+        github = re.findall(r'(github\.com/[a-zA-Z0-9_-]+)', text)
+        if github:
+            profile["contact"]["github"] = github[0]
+
+        # Name extraction via spaCy
         if nlp:
-            doc = nlp(text[:1000])  # analyze first 1000 chars for name
+            doc = nlp(text[:1000])
             for ent in doc.ents:
                 if ent.label_ == "PERSON":
                     profile["name"] = ent.text
                     break
-        
-        # Sections parsing heuristic (Split by common headers)
+
+        # Section parsing
         lines = text.split('\n')
         current_section = "summary"
-        section_text = {"summary": [], "experience": [], "education": [], "skills": [], "projects": []}
-        
+        section_text = {"summary": [], "experience": [], "education": [], "skills": [], "projects": [], "certifications": []}
+
         headers = {
-            "experience": ["experience", "employment", "work history", "professional experience"],
-            "education": ["education", "academic background"],
-            "skills": ["skills", "technologies", "core competencies"],
-            "projects": ["projects", "personal projects", "academic projects"]
+            "experience": ["experience", "employment", "work history", "professional experience", "work experience"],
+            "education": ["education", "academic background", "academic qualifications"],
+            "skills": ["skills", "technologies", "core competencies", "technical skills", "key skills"],
+            "projects": ["projects", "personal projects", "academic projects", "key projects"],
+            "certifications": ["certifications", "licenses", "certificates", "achievements"]
         }
-        
+
         for line in lines:
-            line_lower = line.strip().lower()
+            stripped = line.strip()
+            if not stripped:
+                continue
+            line_lower = stripped.lower()
             matched_section = False
-            for sec, keywords in headers.items():
-                if line_lower in keywords or line_lower.startswith(tuple(k + " " for k in keywords)):
+            for sec, kws in headers.items():
+                if line_lower in kws or any(line_lower.startswith(k) for k in kws):
                     current_section = sec
                     matched_section = True
                     break
-            
-            if not matched_section and line.strip():
-                if current_section in section_text:
-                    section_text[current_section].append(line.strip())
-                    
-        # Process sections
+
+            if not matched_section and current_section in section_text:
+                section_text[current_section].append(stripped)
+
         profile["summary"] = " ".join(section_text["summary"])
-        profile["experience"] = section_text["experience"]
-        profile["skills"] = [s.strip() for s in " ".join(section_text["skills"]).split(',') if s.strip()]
-        if not profile["skills"]:
-             # fallback split by newlines if comma separation wasn't used
-             profile["skills"] = [s for s in section_text["skills"] if len(s.split()) < 4]
-        
         profile["education"] = section_text["education"]
         profile["projects"] = section_text["projects"]
-        
+        profile["certifications"] = section_text["certifications"]
+
+        # Skills: try comma-split first, fallback to newline-split short phrases
+        raw_skills = " ".join(section_text["skills"])
+        profile["skills"] = [s.strip() for s in raw_skills.split(',') if s.strip()]
+        if not profile["skills"]:
+            profile["skills"] = [s for s in section_text["skills"] if len(s.split()) <= 5]
+
+        # Experience: keep ALL non-empty lines from the experience section
+        # This fixes the "No bullets" bug — we pass every line, not just bullet-prefixed ones
+        exp_lines = [l for l in section_text["experience"] if len(l) > 3]
+        profile["experience"] = exp_lines
+
         return profile
