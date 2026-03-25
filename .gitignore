@@ -1,0 +1,32 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.env
+
+# Node
+node_modules/
+dist/
+.cache/
+
+# Data (uploads, profiles, reports)
+data/uploads/
+data/profiles/
+data/reports/
+data/tracker/
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+config.json

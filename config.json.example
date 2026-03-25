@@ -1,0 +1,5 @@
+{
+  "groq_api_key": "YOUR_GROQ_API_KEY_HERE",
+  "llm_model": "llama-3.3-70b-versatile",
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
+}
